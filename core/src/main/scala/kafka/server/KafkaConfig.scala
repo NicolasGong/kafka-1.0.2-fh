@@ -274,6 +274,13 @@ object KafkaConfig {
   val LogRetentionTimeMinutesProp = "log.retention.minutes"
   val LogRetentionTimeHoursProp = "log.retention.hours"
 
+  // 根据磁盘使用情况自动删除Segment的配置
+  val DiskAwareAutoDelete = "disk.aware.auto.delete"
+  // 根据磁盘使用率进行自动删除时的浮动水位
+  val LogRetentionLowWaterMark = "log.retention.low.water.mark"
+  // 磁盘使用率阈值
+  val LogRetentionDiskThreshold = "log.retention.disk.threshold"
+
   val LogRetentionBytesProp = "log.retention.bytes"
   val LogCleanupIntervalMsProp = "log.retention.check.interval.ms"
   val LogCleanupPolicyProp = "log.cleanup.policy"
@@ -736,6 +743,12 @@ object KafkaConfig {
       .define(LogRetentionTimeMillisProp, LONG, null, HIGH, LogRetentionTimeMillisDoc)
       .define(LogRetentionTimeMinutesProp, INT, null, HIGH, LogRetentionTimeMinsDoc)
       .define(LogRetentionTimeHoursProp, INT, Defaults.LogRetentionHours, HIGH, LogRetentionTimeHoursDoc)
+
+      // 增加磁盘保护机制相关配置
+      .define(DiskAwareAutoDelete, BOOLEAN, true, MEDIUM,
+      s"fiberhome addition config $DiskAwareAutoDelete to enable auto delete the oldest log segments when the disk usage breached the log.retention.disk.threshold value.")
+      .define(LogRetentionLowWaterMark, DOUBLE, 0.05, MEDIUM, "log retention low water mark")
+      .define(LogRetentionDiskThreshold, DOUBLE, 0.8, MEDIUM, "log retention disk threshold")
 
       .define(LogRetentionBytesProp, LONG, Defaults.LogRetentionBytes, HIGH, LogRetentionBytesDoc)
       .define(LogCleanupIntervalMsProp, LONG, Defaults.LogCleanupIntervalMs, atLeast(1), MEDIUM, LogCleanupIntervalMsDoc)

@@ -1225,6 +1225,28 @@ class Log(@volatile var dir: File,
     deleteRetentionMsBreachedSegments() + deleteRetentionSizeBreachedSegments() + deleteLogStartOffsetBreachedSegments()
   }
 
+  def deleteFiberhomeOldSegments(deleteSegments: mutable.HashMap[String, Int]): Int = {
+    if (!config.delete) return 0
+    deleteDiskSizeBreachedSegments(deleteSegments)
+  }
+  /**
+    * 根据磁盘大小删除log日志，只删除最早的一个logSegment，至少保留一个LogSegment
+    *
+    * @return
+    */
+  private def deleteDiskSizeBreachedSegments(deletedPartition: mutable.HashMap[String, Int]): Int = {
+    var deleteCount = deletedPartition.getOrElse(topicPartition.toString, 0)
+    def shouldDelete(segment: LogSegment, nextSegmentOpt: Option[LogSegment]) = {
+      if (deleteCount > 0 && nextSegmentOpt.nonEmpty) {
+        deleteCount -= 1
+        true
+      } else {
+        false
+      }
+    }
+    deleteOldSegments(shouldDelete, reason = s"disk usage threshold breach.")
+  }
+
   private def deleteRetentionMsBreachedSegments(): Int = {
     if (config.retentionMs < 0) return 0
     val startMs = time.milliseconds

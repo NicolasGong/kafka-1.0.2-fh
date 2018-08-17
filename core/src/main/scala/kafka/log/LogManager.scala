@@ -29,8 +29,8 @@ import kafka.server.checkpoints.OffsetCheckpointFile
 import kafka.server.{BrokerState, RecoveringFromUncleanShutdown, _}
 import kafka.utils._
 import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.errors.{KafkaStorageException, LogDirNotFoundException}
 import org.apache.kafka.common.utils.Time
-import org.apache.kafka.common.errors.{LogDirNotFoundException, KafkaStorageException}
 
 import scala.collection.JavaConverters._
 import scala.collection._
@@ -62,7 +62,8 @@ class LogManager(logDirs: Seq[File],
                  val brokerState: BrokerState,
                  brokerTopicStats: BrokerTopicStats,
                  logDirFailureChannel: LogDirFailureChannel,
-                 time: Time) extends Logging with KafkaMetricsGroup {
+                 time: Time,
+                 val kafkaConfig: KafkaConfig) extends Logging with KafkaMetricsGroup {
 
   import LogManager._
 
@@ -714,8 +715,91 @@ class LogManager(logDirs: Seq[File],
       debug("Garbage collecting '" + log.name + "'")
       total += log.deleteOldSegments()
     }
-    debug("Log cleanup completed. " + total + " files deleted in " +
-                  (time.milliseconds - startMs) / 1000 + " seconds")
+
+    // 若启用磁盘保护自动删除机制，则进行磁盘使用率检查并自动删除
+    if (kafkaConfig.getBoolean(KafkaConfig.DiskAwareAutoDelete)) {
+      def needDelete(log:Log):Boolean = {
+        !log.config.compact && (log.logSegments.size > 3)
+      }
+
+      //partition删除个数
+      val deletePartitionMappingSize: mutable.HashMap[String, Int] = new mutable.HashMap[String, Int]
+      //每个磁盘需要删除的大小
+      val pathSizeMap: mutable.HashMap[String, Long] = new mutable.HashMap[String, Long]
+      //安全删除
+      val threshold = kafkaConfig.getDouble(KafkaConfig.LogRetentionDiskThreshold)
+      val lowWaterMake = kafkaConfig.getDouble(KafkaConfig.LogRetentionLowWaterMark)
+      //遍历所有的kafka基础日志文件
+      logDirs.foreach {
+        baseKafkaLogFile =>
+          //判断当前磁盘的可用空间
+          val currentDir = baseKafkaLogFile
+          val totalSize = currentDir.getTotalSpace
+          val freeSize = currentDir.getFreeSpace
+          if (totalSize > 0) {
+            //可用百分比
+            val availablePercent = freeSize / java.lang.Double.valueOf(String.valueOf(totalSize))
+            debug(s"fiberhome : Current log dir: $currentDir availablePercent = $availablePercent, diskThreshold = $threshold.")
+            if (availablePercent <= (1 - threshold)) {
+              pathSizeMap.put(baseKafkaLogFile.getAbsolutePath, 0L)
+              //遍历此目录下的所有partition
+              //计算当前磁盘需要删除的数据总量
+              val allNeedDeleteSize = ((1 - threshold - availablePercent) + lowWaterMake) * totalSize
+              //累计准备删除的总大小
+              var prepareDeleteSize: Long = pathSizeMap.getOrElse(baseKafkaLogFile.getAbsolutePath, 0L)
+              info(s"fiberhome : Current kafka log dir $currentDir, totalSize = $totalSize, " +
+                s"freeSize = $freeSize, availablePercent = $availablePercent, deleteSize = $allNeedDeleteSize")
+              while (allNeedDeleteSize > prepareDeleteSize) {
+                for (log <- allLogs.filter(_.dir.getAbsolutePath.startsWith(currentDir.getAbsolutePath));
+                     if needDelete(log)) {
+                  //当前partition名称
+                  val topicAndPartitionName = log.topicPartition.toString
+                  //当前日志文件的logSegment大小
+                  val segmentSize: Int = log.config.segmentSize
+                  //当前partition需要删除的个数
+                  val deletePartitionSize: Int = deletePartitionMappingSize.getOrElse(topicAndPartitionName, 0)
+                  //累计准备删除的总量，如果当前磁盘要删除的数据总量没有达到总大小，继续删除当前partition下的log segment
+                  prepareDeleteSize += segmentSize
+                  pathSizeMap.put(currentDir.getPath, prepareDeleteSize)
+                  deletePartitionMappingSize.put(topicAndPartitionName, deletePartitionSize + 1)
+                }
+              }
+            }
+          }
+      }
+
+      //启动删除操作
+      if (deletePartitionMappingSize.nonEmpty) {
+        val builder:StringBuilder = new StringBuilder
+        deletePartitionMappingSize.map(x => builder.append(x._1).append(" : ").append(x._2).append("\n"))
+        info(s"delete partition info  = ${builder.toString()}")
+
+        for (log <- allLogs; if !log.config.compact) {
+          total += log.deleteFiberhomeOldSegments(deletePartitionMappingSize)
+        }
+
+        //打印所有磁盘删除后的可用空间
+        logDirs.foreach {
+          path =>
+            info(s"fiberhome : Current disk path ${path.getAbsolutePath}, available percent = ${diskAvailablePercent(path.getAbsolutePath)}")
+        }
+      }
+    }
+
+    debug(s"Log cleanup completed. $total files deleted in ${(time.milliseconds - startMs) / 1000} seconds")
+  }
+
+  private def diskAvailablePercent(path: String): Double = {
+    try {
+      val currentDir = new File(path)
+      val totalSize = currentDir.getTotalSpace
+      val freeSize = currentDir.getFreeSpace
+      if (totalSize <= 0) return 0
+      freeSize / java.lang.Double.valueOf(String.valueOf(totalSize))
+    } catch {
+      case e: Exception => error("[fiberhome] deleteRetenionDiskSizeBreachedSegments error : ", e)
+        0.0D
+    }
   }
 
   /**
@@ -811,6 +895,7 @@ object LogManager {
       brokerState = brokerState,
       brokerTopicStats = brokerTopicStats,
       logDirFailureChannel = logDirFailureChannel,
-      time = time)
+      time = time,
+      kafkaConfig = config)
   }
 }

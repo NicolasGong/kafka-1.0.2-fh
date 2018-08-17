@@ -24,8 +24,8 @@ import java.nio.charset.{Charset, StandardCharsets}
 import java.security.cert.X509Certificate
 import java.util.{Collections, Properties}
 import java.util.concurrent.{Callable, Executors, TimeUnit}
-import javax.net.ssl.X509TrustManager
 
+import javax.net.ssl.X509TrustManager
 import kafka.admin.AdminUtils
 import kafka.api._
 import kafka.cluster.{Broker, EndPoint}
@@ -1041,7 +1041,8 @@ object TestUtils extends Logging {
                    time = time,
                    brokerState = BrokerState(),
                    brokerTopicStats = new BrokerTopicStats,
-                   logDirFailureChannel = new LogDirFailureChannel(logDirs.size))
+                   logDirFailureChannel = new LogDirFailureChannel(logDirs.size),
+                   kafkaConfig = KafkaConfig(new util.HashMap()))
   }
 
   @deprecated("This method has been deprecated and it will be removed in a future release.", "0.10.0.0")
